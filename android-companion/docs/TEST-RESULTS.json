@@ -1,0 +1,20 @@
+[
+  {
+    "suite": "dev.cleanmytv.core.AdbIntegrationTest",
+    "tests": 2,
+    "failures": 0,
+    "errors": 0
+  },
+  {
+    "suite": "dev.cleanmytv.core.SafetyTest",
+    "tests": 19,
+    "failures": 0,
+    "errors": 0
+  },
+  {
+    "suite": "io.github.muntashirakon.crypto.spake2.NativeSpakeTest",
+    "tests": 4,
+    "failures": 0,
+    "errors": 0
+  }
+]
