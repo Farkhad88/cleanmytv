@@ -1,0 +1,10 @@
+{
+  "revision": "b73b330e264107ca51a34bf84dd07095b13e517d",
+  "homeVersion": "1.7.1",
+  "files": {
+    "src/shared/themes.ts": "be337adc09886e1b1d6d00fb3313e650dcc513f7151c2b18c311f8e63fae74d0",
+    "src/renderer/src/lib/themes.ts": "e511f04992e6fb147e2e00b2bbf65025349b3cbfc279eecdda0f3929f957d54e",
+    "src/renderer/src/lib/image.ts": "06d058eb86dfc1f1d28d146aa015e6e7ed24d506b6416e3c5e9719d8f7c75dab",
+    "src/main/home.ts": "bb9cd19f7c189acba26dbae14bc998ac5968ac4f01b5907b27a9990d9d814518"
+  }
+}

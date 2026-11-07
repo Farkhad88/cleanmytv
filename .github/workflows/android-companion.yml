@@ -1,0 +1,76 @@
+name: Android companion artifacts
+on:
+  workflow_dispatch:
+  push:
+    branches: ['feat/cleanmytv-android-v070']
+    paths: ['android-companion/**', '.github/workflows/android-companion.yml']
+permissions:
+  contents: read
+concurrency:
+  group: android-companion-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    name: Test and publish Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Install pinned Android toolchain
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+      - name: Verify pinned Home source and bundled media
+        run: python3 android-companion/scripts/verify-publication-assets.py
+      - name: Build native pairing libraries from included source
+        working-directory: android-companion
+        run: python3 scripts/build-native.py
+      - name: Test, lint and build
+        working-directory: android-companion
+        run: ./gradlew :core:test :spake:test :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --console=plain
+      - name: Verify APK signatures and package downloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose android-companion/app/build/outputs/apk/debug/app-debug.apk
+          mkdir -p publication
+          cp android-companion/app/build/outputs/apk/debug/app-debug.apk publication/CleanMyTV-Android-debug.apk
+          cp android-companion/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk publication/CleanMyTV-Android-ui-tests.apk
+          cp android-companion/docs/PARITY-REPORT.md android-companion/docs/VALIDATION.md publication/
+          cp android-companion/README.md publication/INSTALLATION.md
+          cp android-companion/docs/ORIGINAL-ARTIFACT-SHA256SUMS.txt publication/
+          git archive --format=zip -o publication/CleanMyTV-Android-source.zip HEAD
+          (cd publication && sha256sum *.apk *.zip *.md ORIGINAL-ARTIFACT-SHA256SUMS.txt > SHA256SUMS.txt)
+          echo '### Android companion build' >> "$GITHUB_STEP_SUMMARY"
+          echo 'Download the CleanMyTV-Android-debug artifact attached to this run.' >> "$GITHUB_STEP_SUMMARY"
+          echo 'This is a CI rebuild. Its checksum is independent of the earlier local APK.' >> "$GITHUB_STEP_SUMMARY"
+          cat publication/SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload installable APK, source and checksums
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: CleanMyTV-Android-debug
+          path: publication/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+      - name: Record exact download URL
+        env:
+          ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
+        run: echo "Artifact download location — $ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Preserve test and lint evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CleanMyTV-Android-validation
+          path: |
+            android-companion/**/build/test-results/
+            android-companion/**/build/reports/
+          if-no-files-found: warn
+          retention-days: 30
