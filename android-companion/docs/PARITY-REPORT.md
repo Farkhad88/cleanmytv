@@ -35,7 +35,7 @@ The implementation is a substantial development port, not yet a complete, produc
 
 The pairing dependency's pure-Java reference implementation failed its own tests. It is preserved under `experimental/java-spake-reference/` for investigation and is **excluded from the application and active tests**. The application uses the upstream JNI/native implementation instead. Its source adaptations are documented in DEPENDENCIES.md, including OS secure randomness, idempotent destruction and avoiding a double free on rejected messages. This is not a cryptographic audit.
 
-No Windows PC, desktop ADB executable, root or external intermediary is used by the app. No physical TV was modified during development. Emulator/UI instrumentation execution was not available in this workspace: no emulator/system image is installed and `/dev/kvm` is absent. UI tests are supplied and compiled; GitHub Actions includes emulator execution, but that remote workflow was not triggered here.
+No Windows PC, desktop ADB executable, root or external intermediary is used by the app. No physical TV was modified during development. Emulator/UI instrumentation execution was not available in this workspace: no emulator/system image is installed and `/dev/kvm` is absent. UI tests are supplied and compiled; the publication workflow does not execute an emulator or UI instrumentation. The 0.7.0-port.2 ADB lifecycle correction and its fake-peer regression coverage are documented in ADB-STREAM-FIX.md; physical-device confirmation of that fix remains pending.
 
 ## Acceptance status
 

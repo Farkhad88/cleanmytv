@@ -64,10 +64,9 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     fun connect(host: String, port: Int, expected: String? = null) = task("Connecting · approve the RSA key on your TV") {
         closeConnection(); pendingHost = host.trim(); pendingPort = port; isUsb = false
         val shell = network.connect(pendingHost, port) { progress("Waiting for Allow on the TV · compare the RSA fingerprint in Setup") }
-        val identity = try { Identity.read(shell) } catch(e: Exception) { shell.close(); throw e }
-        if(expected != null && identity.stableId != expected) { shell.close(); error("A different TV answered at this saved address. Select its address manually and check the identity.") }
-        candidate = SelectedTv(shell, identity, "$pendingHost:$port")
-        _state.update { it.copy(candidate = identity, endpoint = "$pendingHost:$port", selected = null, lost = false) }
+        val tv = SelectedTv.connect(shell, "$pendingHost:$port", expected)
+        candidate = tv
+        _state.update { it.copy(candidate = tv.identity, endpoint = tv.endpoint, selected = null, lost = false) }
     }
     fun pair(host: String, port: Int, code: String) = task("Pairing securely with the TV") {
         network.pair(host.trim(), port, code)
@@ -78,23 +77,29 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
     fun usbConnect(device: UsbDevice) = task("Connecting over USB OTG") {
         closeConnection(); isUsb = true; lastUsb = device
         val shell = usb.connect(device) { progress("Choose Allow on the TV") }
-        val identity = try { Identity.read(shell) } catch(e: Exception) { shell.close(); throw e }
-        candidate = SelectedTv(shell, identity, "usb:${device.deviceName}")
-        _state.update { it.copy(candidate = identity, endpoint = "USB OTG", selected = null, lost = false) }
+        val tv = SelectedTv.connect(shell, "usb:${device.deviceName}")
+        candidate = tv
+        _state.update { it.copy(candidate = tv.identity, endpoint = "USB OTG", selected = null, lost = false) }
     }
     fun confirmTv() = task("Verifying the selected TV") {
         val tv = candidate ?: error("Connect to a TV first.")
-        tv.checkIdentity(); selected = tv; candidate = null
+        val snapshot = tv.readVerifiedState()
+        val records = store.all()
+        selected = tv; candidate = null
+        applySnapshot(snapshot, records)
         _state.update { it.copy(candidate = null, selected = tv.identity, lost = false, message = if(tv.identity.protected) "MiTV-MZTU1 is protected. All controls that change this TV are blocked." else "") }
         if(!isUsb) {
             val saved = (savedTvs().filter { it.stableId != tv.identity.stableId } + SavedTv("${tv.identity.manufacturer} ${tv.identity.model}", pendingHost, pendingPort, tv.identity.stableId)).takeLast(20)
             saveTvs(saved); _state.update { it.copy(saved = saved) }
         }
-        refresh()
     }
-    fun cancelCandidate() { candidate?.shell?.close(); candidate = null; _state.update { it.copy(candidate = null) } }
+    fun cancelCandidate() { if(_state.value.busy) return; closeConnection() }
     fun disconnect() { if(_state.value.busy) return; closeConnection(); _state.update { it.copy(selected = null, candidate = null, cfg = null, packages = emptyMap(), home = null, homeVersion = null, plan = null, endpoint = "", lost = false) } }
-    private fun closeConnection() { selected?.shell?.close(); candidate?.shell?.close(); selected = null; candidate = null }
+    private fun closeConnection(lost: Boolean = false) {
+        selected?.shell?.close(); candidate?.shell?.close(); selected = null; candidate = null
+        _state.update { it.copy(selected = null, candidate = null, cfg = null, packages = emptyMap(), home = null,
+            homeVersion = null, apps = emptyList(), launchers = emptyList(), plan = null, endpoint = "", lost = lost) }
+    }
     fun discover() {
         discovery?.close(); _state.update { it.copy(discovered = emptyList(), discovering = true) }
         discovery = Discovery(app, { tv -> _state.update { s -> s.copy(discovered = (s.discovered.filterNot { it.host == tv.host && it.port == tv.port } + tv).take(64)) } }, ::message)
@@ -145,7 +150,7 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
                     val checker = RestartCheck(tv(), store, ::progress)
                     val (result, reconnected) = checker.execute(plan, plan.digest) {
                         val shell = if(isUsb) usb.connect(requireNotNull(lastUsb)) else network.connect(pendingHost, pendingPort)
-                        SelectedTv(shell, Identity.read(shell), plan.endpoint)
+                        SelectedTv.connect(shell, plan.endpoint, plan.identity.stableId)
                     }
                     selected = reconnected
                     _state.update { it.copy(selected = reconnected?.identity, lost = reconnected == null) }
@@ -246,17 +251,12 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
         message("Diagnostics saved. Pairing codes, PINs, addresses and Home settings are excluded.")
     }
     private fun refresh() {
-        val target = tv(); target.checkIdentity()
-        val packages = target.packages(); val home = target.home()
-        val version = Regex("versionName=(\\S+)").find(target.read("dumpsys package $HOME"))?.groupValues?.get(1)
-        val cfg = if(version == "1.7.1") runCatching { target.homeConfig() }.getOrNull() else null
-        val launchers = target.read(HOME_CLAIMS).lines().map { it.trim() }.filter { COMPONENT.matches(it) }
-        val apps = if(cfg != null) runCatching {
-            val output = target.read(provider("apps")); val start = output.indexOf("apps=["); require(start >= 0)
-            val array = JSONArray(output.substring(start + 5).substringBeforeLast("}]"))
-            (0 until array.length()).map { val a = array.getJSONObject(it); a.getString("pkg") to a.optString("label", a.getString("pkg")) }.filter { PACKAGE.matches(it.first) }
-        }.getOrDefault(emptyList()) else emptyList()
-        _state.update { it.copy(packages = packages, home = home, homeVersion = version, cfg = cfg, launchers = launchers, apps = apps, records = store.all()) }
+        try { applySnapshot(tv().readVerifiedState(), store.all()) }
+        catch (e: Exception) { closeConnection(lost = true); throw e }
+    }
+    private fun applySnapshot(snapshot: TvSnapshot, records: List<Journal>) {
+        _state.update { it.copy(packages = snapshot.packages, home = snapshot.home, homeVersion = snapshot.homeVersion,
+            cfg = snapshot.cfg, launchers = snapshot.launchers, apps = snapshot.apps, records = records, lost = false) }
     }
     private fun savedTvs(): List<SavedTv> = if(!savedFile.exists()) emptyList() else JSONArray(credentials.open(savedFile.readBytes()).toString(Charsets.UTF_8)).let { a ->
         (0 until a.length()).map { val o = a.getJSONObject(it); SavedTv(o.getString("name"), o.getString("host"), o.getInt("port"), o.getString("id")) }
@@ -283,7 +283,7 @@ class CompanionViewModel(application: Application) : AndroidViewModel(applicatio
                     else -> e.message?.take(1000) ?: "The operation could not be completed."
                 }
                 message(text); log("Stopped: $label")
-                if(e is java.io.IOException && selected != null) _state.update { it.copy(lost = true) }
+                if(e is java.io.IOException || e is DeviceIdentityException) closeConnection(lost = true)
             } finally { _state.update { it.copy(busy = false, progress = "") } }
         }
     }

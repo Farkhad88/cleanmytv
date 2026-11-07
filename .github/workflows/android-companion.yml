@@ -35,7 +35,7 @@ jobs:
         run: python3 scripts/build-native.py
       - name: Test, lint and build
         working-directory: android-companion
-        run: ./gradlew :core:test :spake:test :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --console=plain
+        run: ./gradlew :core:test :spake:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest --no-daemon --console=plain
       - name: Verify APK signatures and package downloads
         shell: bash
         run: |
@@ -45,6 +45,7 @@ jobs:
           cp android-companion/app/build/outputs/apk/debug/app-debug.apk publication/CleanMyTV-Android-debug.apk
           cp android-companion/app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk publication/CleanMyTV-Android-ui-tests.apk
           cp android-companion/docs/PARITY-REPORT.md android-companion/docs/VALIDATION.md publication/
+          cp android-companion/docs/ADB-STREAM-FIX.md publication/
           cp android-companion/README.md publication/INSTALLATION.md
           cp android-companion/docs/ORIGINAL-ARTIFACT-SHA256SUMS.txt publication/
           git archive --format=zip -o publication/CleanMyTV-Android-source.zip HEAD
@@ -52,7 +53,7 @@ jobs:
           echo '### Android companion build' >> "$GITHUB_STEP_SUMMARY"
           echo 'Download the CleanMyTV-Android-debug artifact attached to this run.' >> "$GITHUB_STEP_SUMMARY"
           echo 'This is a CI rebuild. Its checksum is independent of the earlier local APK.' >> "$GITHUB_STEP_SUMMARY"
-          cat publication/SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
+          cat publication/SHA256SUMS.txt | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Upload installable APK, source and checksums
         id: upload
         uses: actions/upload-artifact@v4
@@ -75,6 +76,7 @@ jobs:
         run: |
           cd artifact-verification
           sha256sum --check SHA256SUMS.txt
+          cat SHA256SUMS.txt
           echo 'Uploaded artifact downloaded again and every SHA-256 verified.' >> "$GITHUB_STEP_SUMMARY"
       - name: Preserve test and lint evidence
         if: always()

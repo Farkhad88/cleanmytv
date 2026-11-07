@@ -7,6 +7,8 @@ import java.nio.ByteOrder
 import java.security.PrivateKey
 import java.security.interfaces.RSAPublicKey
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
+import java.net.SocketTimeoutException
 import javax.crypto.Cipher
 
 /** One authenticated device transport. Implementations must never reconnect to another endpoint. */
@@ -45,15 +47,21 @@ object AdbKey {
     fun publicText(key: RSAPublicKey) = Base64.getEncoder().encodeToString(publicBytes(key)) + " CleanMyTV@Android\u0000"
 }
 
-/** Strict, serial ADB client shared by TCP and USB. No desktop ADB executable is involved. */
+class AdbProtocolException(message: String, cause: Throwable? = null) : IOException(message, cause)
+
+/** One reader and one active shell stream per authenticated TCP/USB session. */
 class AdbClient(private var wire: AdbWire) : Shell {
     override var maxData: Int = 4096; private set
     var banner: String = ""; private set
-    private var nextId = 1
-    private var closed = false
+    private var nextId = 1L // Never reuse a local ID within this transport, including on overflow.
+    private val closed = AtomicBoolean(false)
+    @Volatile private var connected = false
+    private val retired = LinkedHashMap<Int, Int>()
+    private class Stream(val local: Int, var remote: Int = 0)
     data class Packet(val command: Int, val arg0: Int, val arg1: Int, val data: ByteArray = byteArrayOf())
 
-    fun connect(key: PrivateKey, publicKey: RSAPublicKey, onAllow: () -> Unit = {}): AdbClient {
+    @Synchronized fun connect(key: PrivateKey, publicKey: RSAPublicKey, onAllow: () -> Unit = {}): AdbClient {
+        check(!closed.get() && !connected) { "Start a new transport to reconnect to the TV." }
         try {
             wire.timeout(10_000)
             send(Packet(CNXN, VERSION, LIMIT, "host::\u0000".toByteArray()))
@@ -77,45 +85,97 @@ class AdbClient(private var wire: AdbWire) : Shell {
             maxData = minOf(p.arg1, LIMIT)
             banner = p.data.toString(Charsets.UTF_8).trimEnd('\u0000')
             require(banner.startsWith("device::")) { "The endpoint is not an ADB device." }
+            check(!closed.get()) { "The TV connection was closed during authentication." }
+            connected = true
             return this
         } catch (e: Exception) { close(); throw e }
     }
 
     @Synchronized override fun shell(command: String, timeoutMs: Int): String {
-        check(!closed) { "The TV connection is closed. Reconnect in Setup." }
+        check(!closed.get() && connected) { "The TV connection is closed or unauthenticated. Reconnect in Setup." }
         require(!command.contains('\u0000'))
+        require(timeoutMs > 0) { "The ADB command timeout must be positive." }
         val service = "shell:$command\u0000".toByteArray()
         require(service.size <= maxData) { "The TV's ADB payload limit is too small for this command." }
-        wire.timeout(timeoutMs)
-        val local = nextId++
-        var remote = 0
         val out = ByteArrayOutputStream()
         try {
-            send(Packet(OPEN, local, 0, service))
+            protocol(nextId <= Int.MAX_VALUE) { "ADB stream IDs exhausted. Reconnect to the TV." }
+            val stream = Stream((nextId++).toInt())
+            val deadline = System.nanoTime() + timeoutMs.toLong() * 1_000_000
+            var latePackets = 0
+            wire.timeout(timeoutMs)
+            send(Packet(OPEN, stream.local, 0, service))
             while (true) {
-                val p = read()
-                require(p.arg1 == local) { "ADB replied on an unexpected stream." }
-                when (p.command) {
-                    OKAY -> { require(remote == 0 || remote == p.arg0); remote = p.arg0 }
-                    WRTE -> {
-                        require(remote != 0 && remote == p.arg0) { "Unopened ADB stream." }
-                        require(out.size() + p.data.size <= 64 * 1024 * 1024) { "ADB response is too large." }
-                        out.write(p.data); send(Packet(OKAY, local, remote))
+                val p = read(deadline)
+                protocol(p.command in setOf(OKAY, WRTE, CLSE) && p.arg1 > 0) { "Unexpected ADB stream packet." }
+                protocol(p.command == WRTE || p.data.isEmpty()) { "ADB control packet contained data." }
+                if (p.arg1 != stream.local) {
+                    // Only exact, recently closed pairs can receive late control notifications.
+                    // Never acknowledge again (close ping-pong), reopen a stream, or discard data.
+                    val oldRemote = retired[p.arg1]
+                    // adbd may answer our final OKAY after deleting its socket with CLSE(0, local).
+                    val knownClose = p.command == CLSE && (p.arg0 == oldRemote || p.arg0 == 0)
+                    val knownOkay = p.command == OKAY && p.arg0 == oldRemote
+                    protocol(oldRemote != null && (knownClose || knownOkay)) {
+                        "ADB replied on an unknown or mismatched stream. Reconnect to the TV."
                     }
-                    CLSE -> { send(Packet(CLSE, local, p.arg0)); return out.toString("UTF-8").replace("\r\n", "\n") }
-                    else -> error("Unexpected ADB stream packet.")
+                    protocol(++latePackets <= RETIRED_LIMIT) { "Too many late ADB notifications." }
+                    continue
+                }
+                when (p.command) {
+                    OKAY -> {
+                        protocol(stream.remote == 0 && p.arg0 != 0) { "ADB stream opened more than once or with an invalid ID." }
+                        stream.remote = p.arg0
+                    }
+                    WRTE -> {
+                        protocol(stream.remote != 0 && stream.remote == p.arg0) { "ADB data arrived before OPEN acknowledgement or from a different peer." }
+                        protocol(out.size() + p.data.size <= 64 * 1024 * 1024) { "ADB response is too large." }
+                        out.write(p.data); send(Packet(OKAY, stream.local, stream.remote))
+                    }
+                    CLSE -> {
+                        protocol(stream.remote != 0) { "The TV rejected the ADB shell stream." }
+                        protocol(stream.remote == p.arg0) { "ADB close arrived from a different peer." }
+                        send(Packet(CLSE, stream.local, stream.remote))
+                        retired[stream.local] = stream.remote
+                        if (retired.size > RETIRED_LIMIT) retired.remove(retired.keys.first())
+                        if (closed.get()) throw IOException("The TV connection was closed.")
+                        return out.toString("UTF-8").replace("\r\n", "\n")
+                    }
                 }
             }
         } catch (e: Exception) { close(); throw e }
     }
 
     private fun send(p: Packet) { wire.output.write(encode(p)); wire.output.flush() }
+    private inline fun protocol(valid: Boolean, message: () -> String) {
+        if (!valid) throw AdbProtocolException(message())
+    }
     private fun read() = decode(wire.input)
-    override fun close() { closed = true; runCatching { wire.close() } }
+    private fun read(deadline: Long): Packet {
+        // Reapply a decreasing deadline before *each* fragmented read, including late packets.
+        val input = object : FilterInputStream(wire.input) {
+            private fun remaining() {
+                if (closed.get()) throw IOException("The TV connection is closed.")
+                val nanos = deadline - System.nanoTime()
+                if (nanos <= 0) throw SocketTimeoutException("The ADB command timed out.")
+                wire.timeout(((nanos + 999_999) / 1_000_000).coerceAtMost(Int.MAX_VALUE.toLong()).toInt())
+            }
+            override fun read(): Int { remaining(); return `in`.read() }
+            override fun read(b: ByteArray, off: Int, len: Int): Int { remaining(); return `in`.read(b, off, len) }
+        }
+        val packet = try { decode(input) } catch (e: IllegalArgumentException) {
+            throw AdbProtocolException(e.message ?: "Invalid ADB packet.", e)
+        }
+        protocol(packet.data.size <= maxData) { "ADB packet exceeded the negotiated payload limit." }
+        return packet
+    }
+    // Do not take the shell monitor: closing must interrupt a blocked read from another thread.
+    override fun close() { if (closed.compareAndSet(false, true)) { connected = false; runCatching { wire.close() } } }
 
     companion object {
         const val VERSION = 0x01000000
         const val LIMIT = 256 * 1024
+        private const val RETIRED_LIMIT = 128
         const val CNXN = 0x4e584e43; const val AUTH = 0x48545541
         const val OPEN = 0x4e45504f; const val OKAY = 0x59414b4f
         const val CLSE = 0x45534c43; const val WRTE = 0x45545257; const val STLS = 0x534c5453

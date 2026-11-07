@@ -1,5 +1,13 @@
 # Validation results
 
+## ADB stream correction — 0.7.0-port.2
+
+The complete Android Gradle check for this correction runs `:core:test :spake:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:assembleDebugAndroidTest`. Local host results: **65 passed, 0 failures/errors/skips**, including 40 new fake-ADB/TV connection regressions. The application has no separate Android JVM unit-test sources; that task reports NO-SOURCE. Local lint reports **0 errors, 7 warnings**. Both APKs assemble successfully. The publication workflow repeats these checks on a clean runner, verifies the APK signature and downloads its own uploaded artifact for SHA-256 validation. See ADB-STREAM-FIX.md and PR #1 for exact build/download results. No desktop or Home rebuild is required for this correction.
+
+Physical Xiaomi confirmation and UI instrumentation execution remain pending. Fake-peer results demonstrate the protocol regression fix; they do not establish physical-device compatibility.
+
+## Original implementation validation — 0.7.0-port.1
+
 Historical results from the v0.7.0 implementation checkout. The publication branch is based on the fork's current main, keeps desktop source unchanged, and adds pinned v0.7.0/Home 1.7.1 references. No new local build was run for publication.
 
 Build command completed successfully:
@@ -17,6 +25,6 @@ Build command completed successfully:
 - Both official Fireplace assets match upstream size and SHA-256.
 - Original tracked desktop/Home source diff against the mandatory commit: empty. Original /workspace/cleanmytv checkout also remains clean.
 
-UI instrumentation tests were compiled, not executed in this workspace. No Android emulator/system image or /dev/kvm is available here. GitHub Actions includes emulator execution, but the workflow has not been run remotely. No physical television was contacted or modified. TLS/USB/pairing and all vendor operations still need physical-device qualification. See PARITY-REPORT.md for functional gaps; build success is not a full-parity claim.
+UI instrumentation tests were compiled, not executed in this workspace. No Android emulator/system image or /dev/kvm is available here. The publication workflow compiles UI instrumentation but does not execute it. No physical television was contacted or modified. TLS/USB/pairing and all vendor operations still need physical-device qualification. See PARITY-REPORT.md for functional gaps; build success is not a full-parity claim.
 
 The failed third-party Java reference implementation has been preserved outside the active build under experimental/. It is not included in the APK. Active production pairing uses the native implementation and the passing native tests.
