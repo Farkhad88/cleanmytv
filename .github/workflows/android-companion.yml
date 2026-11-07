@@ -66,6 +66,16 @@ jobs:
         env:
           ARTIFACT_URL: ${{ steps.upload.outputs.artifact-url }}
         run: echo "Artifact download location — $ARTIFACT_URL" >> "$GITHUB_STEP_SUMMARY"
+      - name: Download uploaded artifact for integrity verification
+        uses: actions/download-artifact@v4
+        with:
+          name: CleanMyTV-Android-debug
+          path: artifact-verification
+      - name: Verify downloaded GitHub artifact checksums
+        run: |
+          cd artifact-verification
+          sha256sum --check SHA256SUMS.txt
+          echo 'Uploaded artifact downloaded again and every SHA-256 verified.' >> "$GITHUB_STEP_SUMMARY"
       - name: Preserve test and lint evidence
         if: always()
         uses: actions/upload-artifact@v4
