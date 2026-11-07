@@ -1,0 +1,43 @@
+name: Verify published Android artifact
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Android companion artifacts workflow run ID
+        required: true
+        default: '42364396177'
+  push:
+    branches: ['feat/cleanmytv-android-v070']
+    paths: ['.github/workflows/verify-android-artifact.yml']
+permissions:
+  actions: read
+  contents: read
+jobs:
+  verify:
+    name: Download and verify published APK without rebuilding
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Download published Android bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: CleanMyTV-Android-debug
+          path: publication
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.run_id || '42364396177' }}
+      - name: Verify every published file and print exact checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd publication
+          sha256sum --check SHA256SUMS.txt
+          cat SHA256SUMS.txt
+          echo '### Verified published Android checksums' >> "$GITHUB_STEP_SUMMARY"
+          cat SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
+      - name: Publish small independently downloadable checksum manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: CleanMyTV-Android-verified-checksums
+          path: publication/SHA256SUMS.txt
+          if-no-files-found: error
+          retention-days: 90
